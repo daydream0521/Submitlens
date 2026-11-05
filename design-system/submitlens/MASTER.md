@@ -4,7 +4,7 @@
 
 ## UI UX Pro Max 生成与适配
 
-使用技能的无障碍、表单、导航、排版规则人工整理。实际执行搜索命令失败：本机 scripts 是路径文本，指向的源目录不存在；未伪称运行成功。采用 React Web，忽略技能中与本项目冲突的 React Native 假定。
+重新安装技能后已运行 `student productivity workspace minimal --design-system`：匹配 Flat Design 和生产力 Web 应用，推荐无渐变/阴影、简单颜色反馈，适合本项目。随后以 --persist --output-dir . 运行，工具保留已有 MASTER。保留下述经 Frontend Design 审查的冷灰/深蓝配色，替代通用青绿/橙色方案；中文系统字体替代无中文覆盖的 Plus Jakarta Sans，避免外部字体依赖。技术栈为用户指定的 React Web。
 
 ## 最终规范
 
