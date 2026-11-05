@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -11,10 +11,15 @@ from pydantic import BaseModel, Field
 DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'submitlens.sqlite3'
 
 
+@contextmanager
 def connect():
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
-    return db
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 @asynccontextmanager

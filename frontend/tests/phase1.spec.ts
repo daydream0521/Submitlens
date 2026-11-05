@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 
 test('项目管理和换行任务在刷新后保留', async ({ page }) => {
-  await page.goto('http://127.0.0.1:5173')
+  await page.goto(process.env.APP_URL || 'http://127.0.0.1:5173')
   const suffix = Date.now()
   for (const [name, kind] of [[`竞赛-${suffix}`, 'contest'], [`课程-${suffix}`, 'course']]) {
     await page.getByRole('button', { name: '新建项目' }).click()
