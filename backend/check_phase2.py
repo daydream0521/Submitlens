@@ -11,6 +11,32 @@ from pypdf import PdfWriter
 from backend.app import main
 
 class Phase2(unittest.TestCase):
+    def test_stale_and_ai_replacement(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(main, 'DB_PATH', Path(folder)/'test.db'), TestClient(main.app) as client:
+            p=client.post('/api/projects',json={'name':'回归','kind':'contest'}).json()
+            base='/api/projects/'+p['id']
+            client.put(base+'/task',json={'task_source':'paste','task_text':'提交视频'})
+            item={'title':'视频','description':'提交视频','source_ref':'段落 1','quote':'提交视频'}
+            manual=client.post(base+'/requirements',json=item).json()
+            client.post(base+'/confirm')
+            client.put(base+'/task',json={'task_source':'paste','task_text':'提交文档'})
+            old=client.post(base+'/confirm').json()[0]
+            self.assertTrue(old['stale']);self.assertFalse(old['confirmed'])
+            client.put(base+'/requirements/'+manual['id'],json=dict(item,title='文档',quote='提交文档'))
+            self.assertTrue(client.post(base+'/confirm').json()[0]['confirmed'])
+            item=dict(item,quote='提交文档')
+            def fake(*a,**kw):return io.BytesIO(json.dumps({'choices':[{'message':{'content':json.dumps({'requirements':[item]})}}]}).encode())
+            with patch.dict(os.environ,{'LLM_API_KEY':'test-only'}),patch.object(main,'urlopen',fake):
+                first=client.post(base+'/extract').json()[0]
+                self.assertEqual(client.post(base+'/extract').status_code,409)
+                self.assertEqual(client.post(base+'/extract?replace_ai_drafts=true').status_code,200)
+                rows=client.get(base+'/requirements').json()
+                self.assertEqual(len(rows),2);self.assertIn(manual['id'],[r['id'] for r in rows]);self.assertNotIn(first['id'],[r['id'] for r in rows])
+                ai=next(r for r in rows if r['id']!=manual['id'])
+                client.put(base+'/requirements/'+ai['id'],json=item)
+                client.post(base+'/extract?replace_ai_drafts=true')
+                self.assertIn(ai['id'],[r['id'] for r in client.get(base+'/requirements').json()])
+
     def test_flow(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(main, 'DB_PATH', Path(folder)/'test.db'):
             with TestClient(main.app) as client:

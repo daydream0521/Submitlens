@@ -142,6 +142,7 @@ def unconfirm(db, project_id):
     for row in db.execute('SELECT id,data FROM requirements WHERE project_id=?', (project_id,)).fetchall():
         item = json.loads(row['data'])
         item['confirmed'] = False
+        item['stale'] = True
         db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(item), row['id']))
 
 
@@ -205,9 +206,9 @@ def requirements(db, project_id):
     return [dict(json.loads(r['data']), id=r['id']) for r in db.execute('SELECT * FROM requirements WHERE project_id=? ORDER BY rowid', (project_id,))]
 
 
-def insert_requirement(db, project_id, body):
+def insert_requirement(db, project_id, body, origin="manual"):
     rid = str(uuid4())
-    data = dict(body.model_dump(), confirmed=False)
+    data = dict(body.model_dump(), confirmed=False, stale=False, origin=origin)
     db.execute('INSERT INTO requirements VALUES (?,?,?)', (rid, project_id, json.dumps(data)))
     return dict(data, id=rid)
 
@@ -230,7 +231,7 @@ def edit_requirement(project_id: str, rid: str, body: RequirementInput):
     with connect() as db:
         if not any(r['id'] == rid for r in requirements(db, project_id)):
             raise HTTPException(404, '要求不存在，请刷新清单')
-        data = dict(body.model_dump(), confirmed=False)
+        data = dict(body.model_dump(), confirmed=False, stale=False, origin="manual")
         db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(data), rid))
         return dict(data, id=rid)
 
@@ -248,13 +249,15 @@ def confirm_requirements(project_id: str):
     with connect() as db:
         for item in requirements(db, project_id):
             rid = item.pop('id')
+            if item.get('stale'):
+                continue
             item['confirmed'] = True
             db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(item), rid))
         return requirements(db, project_id)
 
 
 @app.post('/api/projects/{project_id}/extract')
-def extract(project_id: str):
+def extract(project_id: str, replace_ai_drafts: bool = False):
     with connect() as db:
         task = project(db, project_id)
     if not task['task_text'].strip():
@@ -287,4 +290,10 @@ def extract(project_id: str):
     with connect() as db:
         if project(db, project_id)['task_text'] != task['task_text']:
             raise HTTPException(409, '原文已更新，请重新整理')
-        return [insert_requirement(db, project_id, item) for item in items]
+        drafts = [r for r in requirements(db, project_id) if r.get('origin') == 'ai' and not r['confirmed']]
+        if drafts and not replace_ai_drafts:
+            raise HTTPException(409, '已有 AI 草稿，请选择替换未确认 AI 草稿')
+        if replace_ai_drafts:
+            for draft in drafts:
+                db.execute('DELETE FROM requirements WHERE id=?', (draft['id'],))
+        return [insert_requirement(db, project_id, item, origin='ai') for item in items]
