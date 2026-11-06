@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from .tasks import paragraphs, parse_document
 from typing import Literal
 from uuid import uuid4
+from fastapi.responses import FileResponse
 
 from fastapi import FastAPI, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -40,6 +41,12 @@ async def lifespan(app):
             db.execute("ALTER TABLE projects ADD COLUMN task_segments TEXT NOT NULL DEFAULT '[]'")
         db.execute('''CREATE TABLE IF NOT EXISTS requirements (
             id TEXT PRIMARY KEY, project_id TEXT NOT NULL, data TEXT NOT NULL)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS artifacts (
+            id TEXT PRIMARY KEY, project_id TEXT NOT NULL, original_name TEXT NOT NULL,
+            stored_path TEXT NOT NULL, extension TEXT NOT NULL, bytes INTEGER NOT NULL, uploaded_at TEXT NOT NULL)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS requirement_artifacts (
+            requirement_id TEXT NOT NULL, artifact_id TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(requirement_id, artifact_id))''')
     yield
 
 
@@ -120,6 +127,8 @@ def edit(project_id: str, body: ProjectEdit):
 def delete(project_id: str):
     with connect() as db:
         project(db, project_id)
+        for artifact in db.execute('SELECT * FROM artifacts WHERE project_id=?', (project_id,)).fetchall():
+            remove_artifact(db, dict(artifact))
         db.execute('DELETE FROM projects WHERE id=?', (project_id,))
         db.execute('DELETE FROM requirements WHERE project_id=?', (project_id,))
     return Response(status_code=204)
@@ -197,6 +206,7 @@ def transform_requirements(project_id: str, body: TransformInput):
         if not set(body.ids) <= existing:
             raise HTTPException(409, '要求已更改，请刷新后重试')
         for rid in body.ids:
+            db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (rid,))
             db.execute('DELETE FROM requirements WHERE id=? AND project_id=?', (rid, project_id))
         return [insert_requirement(db, project_id, item) for item in body.items]
 
@@ -240,6 +250,9 @@ def edit_requirement(project_id: str, rid: str, body: RequirementInput):
 def delete_requirement(project_id: str, rid: str):
     with connect() as db:
         project(db, project_id)
+        if not any(r['id'] == rid for r in requirements(db, project_id)):
+            raise HTTPException(404, '要求不存在，请刷新清单')
+        db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (rid,))
         db.execute('DELETE FROM requirements WHERE id=? AND project_id=?', (rid, project_id))
     return Response(status_code=204)
 
@@ -295,5 +308,145 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
             raise HTTPException(409, '已有 AI 草稿，请选择替换未确认 AI 草稿')
         if replace_ai_drafts:
             for draft in drafts:
+                db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (draft['id'],))
                 db.execute('DELETE FROM requirements WHERE id=?', (draft['id'],))
         return [insert_requirement(db, project_id, item, origin='ai') for item in items]
+
+
+def artifact_limit(name):
+    ext = Path(name).suffix.lower()
+    if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tif', '.tiff', '.heic'):
+        return 20 * 1024 * 1024
+    if ext in ('.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv', '.ppt', '.pptx', '.xls', '.xlsx'):
+        return 50 * 1024 * 1024
+    return 1024 * 1024 * 1024
+
+
+def artifact_path(item):
+    return DB_PATH.parent / 'artifacts' / item['stored_path']
+
+
+def get_artifact(db, project_id, aid):
+    project(db, project_id)
+    row = db.execute('SELECT * FROM artifacts WHERE id=? AND project_id=?', (aid, project_id)).fetchone()
+    if row is None:
+        raise HTTPException(404, '文件不存在，请刷新文件库')
+    return dict(row)
+
+
+def get_requirement(db, project_id, rid):
+    item = next((r for r in requirements(db, project_id) if r['id'] == rid), None)
+    if item is None:
+        raise HTTPException(404, '要求不存在，请刷新清单')
+    return item
+
+
+def remove_artifact(db, item):
+    artifact_path(item).unlink(missing_ok=True)
+    db.execute('DELETE FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))
+    db.execute('DELETE FROM artifacts WHERE id=?', (item['id'],))
+
+
+@app.get('/api/projects/{project_id}/artifacts')
+def list_artifacts(project_id: str):
+    with connect() as db:
+        project(db, project_id)
+        result = []
+        for row in db.execute('SELECT * FROM artifacts WHERE project_id=? ORDER BY uploaded_at DESC, rowid DESC', (project_id,)):
+            item = dict(row)
+            item.pop('stored_path')
+            item['requirements'] = [dict(r) for r in db.execute('SELECT requirement_id,selected FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))]
+            result.append(item)
+        return result
+
+
+@app.post('/api/projects/{project_id}/artifacts', status_code=201)
+async def upload_artifacts(project_id: str, files: list[UploadFile], requirement_id: str | None = None, replace_id: str | None = None):
+    with connect() as db:
+        project(db, project_id)
+        if requirement_id:
+            get_requirement(db, project_id, requirement_id)
+        if replace_id:
+            get_artifact(db, project_id, replace_id)
+            if len(files) != 1:
+                raise HTTPException(422, '替换时请选择一个文件')
+    folder = DB_PATH.parent / 'artifacts'
+    folder.mkdir(parents=True, exist_ok=True)
+    pending = []
+    try:
+        for file in files:
+            name = (file.filename or '未命名文件').replace('\\', '/').rsplit('/', 1)[-1]
+            aid = str(uuid4())
+            item = {'id': aid, 'project_id': project_id, 'original_name': name, 'stored_path': aid,
+                    'extension': Path(name).suffix.lower(), 'bytes': 0, 'uploaded_at': timestamp()}
+            pending.append(item)
+            limit = artifact_limit(name)
+            with artifact_path(item).open('wb') as output:
+                while chunk := await file.read(1024 * 1024):
+                    item['bytes'] += len(chunk)
+                    if item['bytes'] > limit:
+                        raise HTTPException(413, f'{name} 超过 {limit // (1024 * 1024)} MB，请缩小文件后重试')
+                    output.write(chunk)
+            if item['bytes'] == 0:
+                raise HTTPException(422, f'{name} 是空文件，请更换文件')
+        with connect() as db:
+            project(db, project_id)
+            if requirement_id:
+                get_requirement(db, project_id, requirement_id)
+            for item in pending:
+                db.execute('INSERT INTO artifacts VALUES (:id,:project_id,:original_name,:stored_path,:extension,:bytes,:uploaded_at)', item)
+                if requirement_id:
+                    db.execute('INSERT INTO requirement_artifacts VALUES (?,?,0)', (requirement_id, item['id']))
+            if replace_id:
+                old = get_artifact(db, project_id, replace_id)
+                for link in db.execute('SELECT requirement_id FROM requirement_artifacts WHERE artifact_id=?', (replace_id,)).fetchall():
+                    db.execute('INSERT OR IGNORE INTO requirement_artifacts VALUES (?,?,0)', (link['requirement_id'], pending[0]['id']))
+                remove_artifact(db, old)
+        return [{k: v for k, v in item.items() if k != 'stored_path'} for item in pending]
+    except BaseException:
+        for item in pending:
+            artifact_path(item).unlink(missing_ok=True)
+        raise
+    finally:
+        for file in files:
+            await file.close()
+
+
+@app.get('/api/projects/{project_id}/artifacts/{aid}/content')
+def download_artifact(project_id: str, aid: str):
+    with connect() as db:
+        item = get_artifact(db, project_id, aid)
+    return FileResponse(artifact_path(item), filename=item['original_name'], media_type='application/octet-stream')
+
+
+@app.delete('/api/projects/{project_id}/artifacts/{aid}', status_code=204)
+def delete_artifact(project_id: str, aid: str):
+    with connect() as db:
+        remove_artifact(db, get_artifact(db, project_id, aid))
+    return Response(status_code=204)
+
+
+class LinkInput(BaseModel):
+    selected: bool = False
+
+
+@app.put('/api/projects/{project_id}/requirements/{rid}/artifacts/{aid}')
+def bind_artifact(project_id: str, rid: str, aid: str, body: LinkInput):
+    with connect() as db:
+        item = get_requirement(db, project_id, rid)
+        get_artifact(db, project_id, aid)
+        multiple = any(c['type'] == 'file_count' for c in item['constraints'])
+        if body.selected and not multiple:
+            db.execute('UPDATE requirement_artifacts SET selected=0 WHERE requirement_id=?', (rid,))
+        db.execute('INSERT INTO requirement_artifacts VALUES (?,?,?) ON CONFLICT(requirement_id,artifact_id) DO UPDATE SET selected=excluded.selected',
+                   (rid, aid, int(body.selected)))
+    return {'requirement_id': rid, 'artifact_id': aid, 'selected': body.selected}
+
+
+@app.delete('/api/projects/{project_id}/requirements/{rid}/artifacts/{aid}', status_code=204)
+def unbind_artifact(project_id: str, rid: str, aid: str):
+    with connect() as db:
+        get_requirement(db, project_id, rid)
+        get_artifact(db, project_id, aid)
+        db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid))
+    return Response(status_code=204)
