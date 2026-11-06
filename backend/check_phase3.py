@@ -9,6 +9,26 @@ from fastapi.testclient import TestClient
 from backend.app import main
 
 class Phase3(unittest.TestCase):
+    def test_process_restart(self):
+        from backend.check_phase1 import start, request
+        from urllib.request import Request, urlopen
+        with tempfile.TemporaryDirectory() as folder:
+            server=start(Path(folder)/'restart.db')
+            try:
+                p=request('/projects','POST',{'name':'重启成果','kind':'contest'})
+                base='/projects/'+p['id']
+                r=request(base+'/requirements','POST',{'title':'视频','description':'演示视频'})
+                body=b'--boundary\r\nContent-Disposition: form-data; name="files"; filename="demo.mp4"\r\nContent-Type: video/mp4\r\n\r\nactual file bytes\r\n--boundary--\r\n'
+                with urlopen(Request('http://127.0.0.1:8011/api'+base+'/artifacts?requirement_id='+r['id'],data=body,headers={'Content-Type':'multipart/form-data; boundary=boundary'})) as response:
+                    import json
+                    a=json.load(response)[0]
+                request(base+'/requirements/'+r['id']+'/artifacts/'+a['id'],'PUT',{'selected':True})
+                server.terminate();server.wait();server=start(Path(folder)/'restart.db')
+                files=request(base+'/artifacts')
+                self.assertEqual(files[0]['requirements'],[{'requirement_id':r['id'],'selected':1}])
+                with urlopen('http://127.0.0.1:8011/api'+base+'/artifacts/'+a['id']+'/content') as response:self.assertEqual(response.read(),b'actual file bytes')
+            finally:server.terminate();server.wait()
+
     def test_files_and_links(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(main,'DB_PATH',Path(folder)/'test.db'):
             with TestClient(main.app) as c:
@@ -32,6 +52,7 @@ class Phase3(unittest.TestCase):
                 self.assertEqual(c.get(base+'/artifacts/'+old+'/content').content,b'old')
                 self.assertEqual(c.get(base+'/artifacts/'+final+'/content').content,b'final')
                 bind(r1,old,True);bind(r1,final,True)
+                c.put(base+'/requirements/'+r1+'/artifacts/'+final,json={})
                 files=c.get(base+'/artifacts').json()
                 selected=lambda rows,r:[a['id'] for a in rows if any(l['requirement_id']==r and l['selected'] for l in a['requirements'])]
                 self.assertEqual(selected(files,r1),[final])

@@ -427,7 +427,7 @@ def delete_artifact(project_id: str, aid: str):
 
 
 class LinkInput(BaseModel):
-    selected: bool = False
+    selected: bool | None = None
 
 
 @app.put('/api/projects/{project_id}/requirements/{rid}/artifacts/{aid}')
@@ -438,9 +438,13 @@ def bind_artifact(project_id: str, rid: str, aid: str, body: LinkInput):
         multiple = any(c['type'] == 'file_count' for c in item['constraints'])
         if body.selected and not multiple:
             db.execute('UPDATE requirement_artifacts SET selected=0 WHERE requirement_id=?', (rid,))
-        db.execute('INSERT INTO requirement_artifacts VALUES (?,?,?) ON CONFLICT(requirement_id,artifact_id) DO UPDATE SET selected=excluded.selected',
-                   (rid, aid, int(body.selected)))
-    return {'requirement_id': rid, 'artifact_id': aid, 'selected': body.selected}
+        if body.selected is None:
+            db.execute('INSERT OR IGNORE INTO requirement_artifacts VALUES (?,?,0)', (rid, aid))
+        else:
+            db.execute('INSERT INTO requirement_artifacts VALUES (?,?,?) ON CONFLICT(requirement_id,artifact_id) DO UPDATE SET selected=excluded.selected',
+                       (rid, aid, int(body.selected)))
+        selected = db.execute('SELECT selected FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid)).fetchone()[0]
+    return {'requirement_id': rid, 'artifact_id': aid, 'selected': bool(selected)}
 
 
 @app.delete('/api/projects/{project_id}/requirements/{rid}/artifacts/{aid}', status_code=204)

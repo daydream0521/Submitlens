@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
 import { Requirements } from './Requirements'
+import { Artifacts } from './Artifacts'
 
 type Project = { id: string; name: string; kind: 'contest' | 'course'; task_text: string; task_filename?: string; task_segments?: {ref:string;text:string}[]; updated_at: string }
 async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
@@ -15,6 +16,7 @@ async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> 
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
   const [selected, setSelected] = useState<Project | null>(null)
+  const [view,setView] = useState('task')
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -31,6 +33,7 @@ function App() {
     setLoading(true); setError('')
     try {
       const list = await api<Project[]>('/projects'); setProjects(list)
+      setView(new URLSearchParams(location.hash.slice(1)).get('view') || 'task')
       const id = new URLSearchParams(location.hash.slice(1)).get('project')
       if (id) { const p = await api<Project>('/projects/' + id); setSelected(p); setText(p.task_text) }
       else setSelected(null)
@@ -48,7 +51,7 @@ function App() {
     void load()
   }; window.addEventListener('hashchange', change); return () => window.removeEventListener('hashchange', change) }, [])
   useEffect(() => { const warn = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = '' } }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn) }, [dirty])
-  function navigate(id?: string) { setSaved(false); location.hash = id ? 'project=' + id : '' }
+  function navigate(id?: string, page='task') { setSaved(false); location.hash = id ? 'project=' + id + (page==='artifacts'?'&view=artifacts':'') : '' }
   function show(type: typeof modal, p?: Project) { setTarget(p || null); setName(p?.name || ''); setKind(p?.kind || 'contest'); setFormError(''); setModal(type); dialog.current?.showModal() }
   function close() { if (busy) return; dialog.current?.close(); setModal(null) }
   async function submit(e: React.FormEvent) {
@@ -76,13 +79,13 @@ function App() {
     <a className="skip" href="#main">跳到正文</a>
     <aside><a className="brand" href="#" onClick={e => { e.preventDefault(); navigate() }}><span className="brandmark" aria-hidden="true">S</span>SubmitLens</a>
       <nav aria-label="项目导航"><button className={!selected ? 'nav active' : 'nav'} onClick={() => navigate()}>我的项目</button>
-      {selected && <><div className="project-label">{selected.name}</div><div className="nav active" aria-current="page">任务要求</div><div className="nav unavailable">成果验收 <small>未实现</small></div><div className="nav unavailable">交付中心 <small>未实现</small></div></>}</nav>
+      {selected && <><div className="project-label">{selected.name}</div><button className={view==='task'?'nav active':'nav'} aria-current={view==='task'?'page':undefined} onClick={()=>navigate(selected.id)}>任务要求</button><button className={view==='artifacts'?'nav active':'nav'} aria-current={view==='artifacts'?'page':undefined} onClick={()=>navigate(selected.id,'artifacts')}>成果验收</button><div className="nav unavailable">交付中心 <small>未实现</small></div></>}</nav>
     </aside>
-    <main id="main"><header><div><div className="breadcrumb">{selected ? <button onClick={() => navigate()}>我的项目</button> : '项目'}</div><h1>{selected ? '任务要求' : '我的项目'}</h1>{selected && <p className="project-heading">{selected.name}<span className="kind">{selected.kind === 'contest' ? '竞赛' : '课程'}</span></p>}</div>
+    <main id="main"><header><div><div className="breadcrumb">{selected ? <button onClick={() => navigate()}>我的项目</button> : '项目'}</div><h1>{selected ? (view==='artifacts'?'成果验收':'任务要求') : '我的项目'}</h1>{selected && <p className="project-heading">{selected.name}<span className="kind">{selected.kind === 'contest' ? '竞赛' : '课程'}</span></p>}</div>
       {!selected && <button className="primary" onClick={() => show('create')}>新建项目</button>}
-      {selected && <div className="actions"><span role="status">{dirty ? '未保存' : saved ? '已保存' : ''}</span><button className="primary" disabled={busy || !dirty} onClick={save}>{busy ? '保存中…' : '保存'}</button></div>}</header>
+      {selected && view==='task' && <div className="actions"><span role="status">{dirty ? '未保存' : saved ? '已保存' : ''}</span><button className="primary" disabled={busy || !dirty} onClick={save}>{busy ? '保存中…' : '保存'}</button></div>}</header>
       {error && <div className="error" role="alert">{error} <button onClick={() => { void (dirty ? save() : load()) }}>重试</button></div>}
-      {loading ? <p role="status">正在读取…</p> : selected ? <><section className="editor"><label>上传文件<input type="file" accept=".pdf,.docx,.md,.txt" disabled={busy} onChange={async e => { const file=e.target.files?.[0]; if(!file)return; e.target.value=''; if(file.size>50*1024*1024){setError('文件超过 50 MB，请缩小后重试');return} if(dirty&&!confirm('上传将替换未保存文本，继续？'))return;setBusy(true);setError('');try{const body=new FormData();body.append('file',file);const r=await fetch(`/api/projects/${selected.id}/task-file`,{method:'POST',body});const p=await r.json();if(!r.ok)throw new Error(p.detail);setSelected(p);setText(p.task_text)}catch(error){setError((error as Error).message)}finally{setBusy(false)} }}/></label><label htmlFor="task">粘贴文本</label><textarea id="task" value={text} onChange={e => { setText(e.target.value); setSaved(false) }} spellCheck={false} placeholder="粘贴任务说明" disabled={busy}/><footer><span>任务原文</span><span>{text.length} 字符</span></footer><details><summary>来源 {selected.task_filename}</summary>{selected.task_segments?.map((s,i)=><div key={i}><b>{s.ref}</b><pre className="original">{s.text}</pre></div>)}</details></section><Requirements key={selected.id + selected.updated_at} id={selected.id} dirty={dirty}/></> : <section className="project-list" aria-label="项目列表">
+      {loading ? <p role="status">正在读取…</p> : selected ? view==='artifacts' ? <Artifacts key={selected.id} id={selected.id}/> : <><section className="editor"><label>上传文件<input type="file" accept=".pdf,.docx,.md,.txt" disabled={busy} onChange={async e => { const file=e.target.files?.[0]; if(!file)return; e.target.value=''; if(file.size>50*1024*1024){setError('文件超过 50 MB，请缩小后重试');return} if(dirty&&!confirm('上传将替换未保存文本，继续？'))return;setBusy(true);setError('');try{const body=new FormData();body.append('file',file);const r=await fetch(`/api/projects/${selected.id}/task-file`,{method:'POST',body});const p=await r.json();if(!r.ok)throw new Error(p.detail);setSelected(p);setText(p.task_text)}catch(error){setError((error as Error).message)}finally{setBusy(false)} }}/></label><label htmlFor="task">粘贴文本</label><textarea id="task" value={text} onChange={e => { setText(e.target.value); setSaved(false) }} spellCheck={false} placeholder="粘贴任务说明" disabled={busy}/><footer><span>任务原文</span><span>{text.length} 字符</span></footer><details><summary>来源 {selected.task_filename}</summary>{selected.task_segments?.map((s,i)=><div key={i}><b>{s.ref}</b><pre className="original">{s.text}</pre></div>)}</details></section><Requirements key={selected.id + selected.updated_at} id={selected.id} dirty={dirty}/></> : <section className="project-list" aria-label="项目列表">
         {projects.length === 0 ? <div className="empty"><h2>暂无项目</h2></div> : <><div className="list-heading"><span>项目名称</span><span>更新时间</span><span>操作</span></div>{projects.map(p => <article key={p.id}><div className="project-cell"><span className="file-symbol" aria-hidden="true"/><div><button className="project-name" onClick={() => navigate(p.id)}>{p.name}</button><span className="project-type">{p.kind === 'contest' ? '竞赛' : '课程'}</span></div></div><time dateTime={p.updated_at}>{new Date(p.updated_at).toLocaleString('zh-CN', { hour12: false })}</time><div className="row-actions"><button onClick={() => show('rename', p)}>重命名</button><button className="danger-text" onClick={() => show('delete', p)}>删除</button></div></article>)}</>}
       </section>}
     </main>
