@@ -7,7 +7,7 @@ import os
 from urllib.request import Request, urlopen
 from dotenv import load_dotenv
 from .tasks import paragraphs, parse_document
-from .citations import resolve_sources
+from .citations import resolve_draft
 from .checks import run_checks, status as check_status
 from typing import Literal
 from uuid import uuid4
@@ -209,13 +209,15 @@ class TransformInput(BaseModel):
 @app.post('/api/projects/{project_id}/requirements-transform')
 def transform_requirements(project_id: str, body: TransformInput):
     with connect() as db:
-        existing = {r['id'] for r in requirements(db, project_id)}
+        previous = requirements(db, project_id)
+        pending_sources = any(r.get('source_issues') for r in previous if r['id'] in body.ids)
+        existing = {r['id'] for r in previous}
         if not set(body.ids) <= existing:
             raise HTTPException(409, '要求已更改，请刷新后重试')
         for rid in body.ids:
             db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (rid,))
             db.execute('DELETE FROM requirements WHERE id=? AND project_id=?', (rid, project_id))
-        return [insert_requirement(db, project_id, item) for item in body.items]
+        return [insert_requirement(db, project_id, item, resolved=resolve_draft(item,project(db,project_id)['task_segments']) if pending_sources else None) for item in body.items]
 
 
 def requirements(db, project_id):
@@ -223,9 +225,9 @@ def requirements(db, project_id):
     return [dict(json.loads(r['data']), id=r['id']) for r in db.execute('SELECT * FROM requirements WHERE project_id=? ORDER BY rowid', (project_id,))]
 
 
-def insert_requirement(db, project_id, body, origin="manual"):
+def insert_requirement(db, project_id, body, origin="manual", resolved=None):
     rid = str(uuid4())
-    data = dict(body.model_dump(), confirmed=False, stale=False, origin=origin)
+    data = dict(resolved if resolved is not None else body.model_dump(), confirmed=False, stale=False, origin=origin)
     db.execute('INSERT INTO requirements VALUES (?,?,?)', (rid, project_id, json.dumps(data)))
     return dict(data, id=rid)
 
@@ -248,7 +250,9 @@ def edit_requirement(project_id: str, rid: str, body: RequirementInput):
     with connect() as db:
         if not any(r['id'] == rid for r in requirements(db, project_id)):
             raise HTTPException(404, '要求不存在，请刷新清单')
-        data = dict(body.model_dump(), confirmed=False, stale=False, origin="manual")
+        old=get_requirement(db, project_id, rid)
+        resolved=resolve_draft(body,project(db,project_id)['task_segments']) if old.get('source_issues') else body.model_dump()
+        data = dict(resolved, confirmed=False, stale=False, origin="manual")
         db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(data), rid))
         return dict(data, id=rid)
 
@@ -269,7 +273,7 @@ def confirm_requirements(project_id: str):
     with connect() as db:
         for item in requirements(db, project_id):
             rid = item.pop('id')
-            if item.get('stale'):
+            if item.get('stale') or item.get('source_issues'):
                 continue
             item['confirmed'] = True
             item['origin'] = 'reviewed'
@@ -287,7 +291,9 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
     if not key:
         raise HTTPException(503, '未配置 API Key，请手动添加要求')
     schema = RequirementInput.model_json_schema()
-    prompt = ('仅提取明确交付要求，按交付物合并。推荐选题、背景、评分不得变成必交。'
+    prompt = ('仅提取实际需要交付的材料及其条款；推荐选题、背景、评分和报名办理事项不是交付物。'
+              '不同赛事阶段/章节的同名交付物分别返回，不跨章节合并。quote 优先使用完整交付条款或表格数据行，禁止只引章节标题或孤立数字。'
+              'source_ref 使用该条款的单个真实片段编号；重复章节必须带准确片段编号，不编造范围或合并编号。'
               '不要补充常识阈值。source_ref 仅作候选，quote 必须逐字引用原文并足以区分重复出处。'
               '每个约束可引用不同片段，使用各自 source_ref 和精确 quote；value 保留原文单位，不执行检查。'
               '语义内容需人工复核。仅返回 JSON {"requirements":[...]}，单项结构：' + json.dumps(schema, ensure_ascii=False))
@@ -301,7 +307,7 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
         items = [RequirementInput.model_validate(x) for x in json.loads(raw['choices'][0]['message']['content'])['requirements']]
         if not items:
             raise ValueError('未提取到要求')
-        resolve_sources(items, task['task_segments'] or paragraphs(task['task_text']))
+        resolved = [resolve_draft(item, task['task_segments'] or paragraphs(task['task_text'])) for item in items]
     except Exception as error:
         raise HTTPException(502, '整理失败：' + (str(error) if isinstance(error, ValueError) else '接口请求或响应异常，请重试或手动添加要求')) from error
     with connect() as db:
@@ -314,7 +320,7 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
             for draft in drafts:
                 db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (draft['id'],))
                 db.execute('DELETE FROM requirements WHERE id=?', (draft['id'],))
-        return [insert_requirement(db, project_id, item, origin='ai') for item in items]
+        return [insert_requirement(db, project_id, item, origin='ai', resolved=data) for item,data in zip(items,resolved)]
 
 
 def artifact_limit(name, content_type=""):

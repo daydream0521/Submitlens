@@ -72,7 +72,12 @@ class Phase2(unittest.TestCase):
                 with patch.dict(os.environ,{'LLM_API_KEY':'test-only'}),patch.object(main,'urlopen',fake):
                     r=client.post(base+'/extract');self.assertEqual(r.status_code,200,r.text);self.assertFalse(r.json()[0]['confirmed'])
                     response['choices'][0]['message']['content']=json.dumps({'requirements':[dict(item,quote='不存在')]})
-                    self.assertEqual(client.post(base+'/extract').status_code,502)
+                    pending=client.post(base+'/extract?replace_ai_drafts=true');self.assertEqual(pending.status_code,200)
+                    self.assertTrue(pending.json()[0]['source_issues'])
+                    self.assertFalse(client.post(base+'/confirm').json()[0]['confirmed'])
+                    client.delete(base+'/requirements/'+pending.json()[0]['id'])
+                    response['choices'][0]['message']['content']=json.dumps({'requirements':[item]})
+                    client.post(base+'/extract')
                     response['choices'][0]['message']['content']='{"requirements":[]}'
                     self.assertEqual(client.post(base+'/extract').status_code,502)
                 with patch.dict(os.environ,{'LLM_API_KEY':'test-only'}),patch.object(main,'urlopen',side_effect=OSError('offline')):
