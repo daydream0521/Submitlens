@@ -8,7 +8,7 @@ const size=(n:number)=>n<1024?`${n} B`:n<1024*1024?`${(n/1024).toFixed(1)} KB`:`
 export function Artifacts({id}:{id:string}) {
   const [requirements,setRequirements]=useState<Requirement[]>([]),[files,setFiles]=useState<Artifact[]>([])
   const [summary,setSummary]=useState<{overall:string;counts:Record<string,number>}>({overall:'unchecked',counts:{}})
-  const [active,setActive]=useState(''),[picker,setPicker]=useState(false),[filter,setFilter]=useState('all')
+  const [active,setActive]=useState(new URLSearchParams(location.hash.slice(1)).get('requirement')||''),[picker,setPicker]=useState(false),[filter,setFilter]=useState('all')
   const [busy,setBusy]=useState(false),[progress,setProgress]=useState(''),[error,setError]=useState('')
   const root=`/api/projects/${id}`
   async function request(path:string,method='GET',body?:unknown){
@@ -40,7 +40,7 @@ export function Artifacts({id}:{id:string}) {
   const item=requirements.find(r=>r.id===active)
   const link=(rid:string,aid:string,chosen?:boolean)=>run(async()=>{await request(`/requirements/${rid}/artifacts/${aid}`,'PUT',chosen===undefined?{}:{selected:chosen})})
   const input=(label:string,rid?:string,replace?:string)=><label className="upload-control">{label}<input aria-label={label} type="file" multiple={!replace} disabled={busy} onChange={e=>{void upload(e.target.files,rid,replace);e.target.value=''}}/></label>
-  return <div className="evidence-workspace">
+  return <div className="evidence-workspace"><p><a href={`#project=${id}&view=delivery`}>交付中心</a></p>
     <section className="requirements"><header><div><h2>验收状态：{labels[summary.overall]}</h2><p>通过 {summary.counts.pass||0}　不通过 {summary.counts.fail||0}　待复核 {summary.counts.pending||0}　待检查 {summary.counts.unchecked||0}</p></div><button className="primary" disabled={busy||!formal.length} onClick={()=>void run(async()=>{await request('/check','POST')})}>{busy?'正在检查…':requirements.some(r=>r.last_checked_at)?'重新检查':'开始预检'}</button></header></section>
     <section className="requirements"><header><h2>证据覆盖</h2><p>{covered.length} / {formal.length} 项已有选定文件</p></header>
       <label>筛选<select value={filter} onChange={e=>setFilter(e.target.value)}><option value="all">全部要求</option><option value="missing">缺少证据</option><option value="covered">已有证据</option><option value="fail">不通过</option><option value="pending">待复核/待检查</option><option value="pass">通过</option></select></label>

@@ -26,6 +26,8 @@ def report(project, summary, packed, selected, generated):
         state = '待处理' if pending else LABELS[item['status']]
         lines += ['', f"## {item['title']}", f"类别：{'必交' if item['required'] else '建议'}；状态：{state}",
                   item['description'], f"原文出处：{item.get('source_ref') or '待定位'}", item.get('quote',''), '', '### 验收选定文件']
+        for constraint in item.get('constraints', []):
+            lines += [f"约束：{constraint['type']} / {constraint['value']}", f"约束依据：{constraint.get('source_ref') or item.get('source_ref','')} / {constraint['quote']}"]
         evidence = selected.get(item['id'], [])
         lines.extend([f"- {f['original_name']}（{f['id']}）" for f in evidence] or ['未选定成果。'])
         omitted = [f for f in evidence if f['id'] not in packed_ids]

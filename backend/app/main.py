@@ -16,7 +16,7 @@ import tempfile
 import zipfile
 from .exporting import archive_path, report as export_report
 
-from fastapi import FastAPI, HTTPException, Response, UploadFile
+from fastapi import FastAPI, HTTPException, Response, UploadFile, Request as HttpRequest, Depends
 from pydantic import BaseModel, Field
 
 DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'submitlens.sqlite3'
@@ -580,6 +580,16 @@ class ExportInput(BaseModel):
     artifact_ids: list[str] = []
 
 
+async def export_input(request: HttpRequest):
+    try:
+        if request.headers.get('content-type','').startswith('application/x-www-form-urlencoded'):
+            form = await request.form()
+            return ExportInput(artifact_ids=form.getlist('artifact_ids'))
+        return ExportInput.model_validate(await request.json())
+    except ValueError as error:
+        raise HTTPException(422, '请选择有效的项目文件后重试') from error
+
+
 class ExportResponse(FileResponse):
     def __init__(self, path, project_id, generated):
         super().__init__(path, filename='SubmitLens.zip', media_type='application/zip')
@@ -599,7 +609,7 @@ class ExportResponse(FileResponse):
 
 
 @app.post('/api/projects/{project_id}/export')
-def export_project(project_id: str, body: ExportInput):
+def export_project(project_id: str, body: ExportInput = Depends(export_input)):
     temp_path = None
     try:
         with connect() as db:
