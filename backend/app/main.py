@@ -154,6 +154,10 @@ def unconfirm(db, project_id):
         item = json.loads(row['data'])
         item['confirmed'] = False
         item['stale'] = True
+        item.pop('last_check_result', None)
+        item.pop('last_checked_at', None)
+        item['review_decision'] = 'pending'
+        item['review_note'] = ''
         db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(item), row['id']))
 
 
@@ -342,9 +346,12 @@ def get_requirement(db, project_id, rid):
 
 
 def remove_artifact(db, item):
+    affected = [r['requirement_id'] for r in db.execute('SELECT requirement_id FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))]
     artifact_path(item).unlink(missing_ok=True)
     db.execute('DELETE FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))
     db.execute('DELETE FROM artifacts WHERE id=?', (item['id'],))
+    for rid in affected:
+        invalidate_evidence(db, rid)
 
 
 @app.get('/api/projects/{project_id}/artifacts')
@@ -435,6 +442,7 @@ class LinkInput(BaseModel):
 def bind_artifact(project_id: str, rid: str, aid: str, body: LinkInput):
     with connect() as db:
         item = get_requirement(db, project_id, rid)
+        before = {f['id'] for f in selected_files(db, rid)}
         get_artifact(db, project_id, aid)
         multiple = any(c['type'] == 'file_count' for c in item['constraints'])
         if body.selected and not multiple:
@@ -444,6 +452,8 @@ def bind_artifact(project_id: str, rid: str, aid: str, body: LinkInput):
         else:
             db.execute('INSERT INTO requirement_artifacts VALUES (?,?,?) ON CONFLICT(requirement_id,artifact_id) DO UPDATE SET selected=excluded.selected',
                        (rid, aid, int(body.selected)))
+        if before != {f['id'] for f in selected_files(db, rid)}:
+            invalidate_evidence(db, rid)
         selected = db.execute('SELECT selected FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid)).fetchone()[0]
     return {'requirement_id': rid, 'artifact_id': aid, 'selected': bool(selected)}
 
@@ -454,6 +464,7 @@ def unbind_artifact(project_id: str, rid: str, aid: str):
         get_requirement(db, project_id, rid)
         get_artifact(db, project_id, aid)
         db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid))
+        invalidate_evidence(db, rid)
     return Response(status_code=204)
 
 
@@ -494,4 +505,39 @@ def check_project(project_id: str):
         for item in requirements(db, project_id):
             if item.get('confirmed') and not item.get('stale'):
                 check_requirement(db, item)
+        return check_summary(db, project_id)
+
+
+def invalidate_evidence(db, rid):
+    row = db.execute('SELECT data FROM requirements WHERE id=?', (rid,)).fetchone()
+    if row is None:
+        return
+    item = dict(json.loads(row['data']), id=rid)
+    checked = item.get('last_check_result') is not None
+    item['review_decision'] = 'pending'
+    item['review_note'] = ''
+    item.pop('reviewed_at', None)
+    item.pop('last_check_result', None)
+    item.pop('last_checked_at', None)
+    if checked and item.get('confirmed') and not item.get('stale'):
+        check_requirement(db, item)
+    else:
+        persist_requirement(db, rid, item)
+
+
+class ReviewInput(BaseModel):
+    decision: Literal['pending', 'pass', 'fail']
+    note: str = ''
+
+
+@app.put('/api/projects/{project_id}/requirements/{rid}/review')
+def review_requirement(project_id: str, rid: str, body: ReviewInput):
+    with connect() as db:
+        item = get_requirement(db, project_id, rid)
+        if not item.get('confirmed') or item.get('stale'):
+            raise HTTPException(409, '请先处理并确认要求')
+        item['review_decision'] = body.decision
+        item['review_note'] = body.note
+        item['reviewed_at'] = timestamp()
+        persist_requirement(db, rid, item)
         return check_summary(db, project_id)
