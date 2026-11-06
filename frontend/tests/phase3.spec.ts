@@ -21,6 +21,10 @@ test('成果定向上传、多对多关联、选定与删除覆盖',async({page,
  }
  let rows=await(await request.get(base+'/artifacts')).json()
  expect(rows[0].requirements).toHaveLength(2)
+ const readme=page.locator('.library-file').filter({hasText:'README.md'})
+ await readme.locator('summary').click()
+ await readme.getByRole('button',{name:'环境配置说明',exact:true}).click()
+ await expect(page.locator('#evidence-'+env).getByRole('heading',{name:'环境配置说明',exact:true})).toBeVisible()
  await page.locator('.coverage-row').filter({hasText:'演示视频'}).click()
  const section=page.locator('#evidence-'+video)
  await section.getByLabel('上传成果',{exact:true}).setInputFiles([

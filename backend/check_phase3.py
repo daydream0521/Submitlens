@@ -37,6 +37,7 @@ class Phase3(unittest.TestCase):
                 r1,r2=req('环境配置说明'),req('复现指南')
                 count=req('截图', [{'type':'file_count','value':'2','quote':'2'}])
                 c.post(base+'/confirm')
+                unchanged_requirements=c.get(base+'/requirements').json()
                 def upload(name,body,query=''):
                     response=c.post(base+'/artifacts'+query,files={'files':(name,body)})
                     self.assertEqual(response.status_code,201,response.text)
@@ -47,6 +48,10 @@ class Phase3(unittest.TestCase):
                 shared=upload('README.md',b'doc')
                 bind(r1,shared);bind(r1,shared);bind(r2,shared)
                 self.assertEqual(len(c.get(base+'/artifacts').json()[0]['requirements']),2)
+                c.delete(base+'/requirements/'+r2+'/artifacts/'+shared)
+                self.assertEqual(c.get(base+'/artifacts/'+shared+'/content').content,b'doc')
+                self.assertEqual(len(c.get(base+'/artifacts').json()[0]['requirements']),1)
+                bind(r2,shared)
                 old=upload('demo.mp4',b'old','?requirement_id='+r1)
                 final=upload('demo.mp4',b'final','?requirement_id='+r1)
                 self.assertEqual(c.get(base+'/artifacts/'+old+'/content').content,b'old')
@@ -81,6 +86,8 @@ class Phase3(unittest.TestCase):
                 file.read=fail_read
                 with self.assertRaises(OSError):asyncio.run(main.upload_artifacts(p['id'],[file],r1))
                 self.assertEqual(len(list((Path(folder)/'artifacts').iterdir())),len(c.get(base+'/artifacts').json()))
+                self.assertEqual(c.get(base+'/requirements').json(),unchanged_requirements)
+                self.assertEqual(c.get(base).json()['task_text'],'')
                 other=c.post('/api/projects',json={'name':'其他','kind':'course'}).json()['id']
                 self.assertEqual(c.put('/api/projects/'+other+'/requirements/'+r1+'/artifacts/'+old,json={'selected':True}).status_code,404)
             with TestClient(main.app) as c:

@@ -265,6 +265,7 @@ def confirm_requirements(project_id: str):
             if item.get('stale'):
                 continue
             item['confirmed'] = True
+            item['origin'] = 'reviewed'
             db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(item), rid))
         return requirements(db, project_id)
 
@@ -313,11 +314,11 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
         return [insert_requirement(db, project_id, item, origin='ai') for item in items]
 
 
-def artifact_limit(name):
+def artifact_limit(name, content_type=""):
     ext = Path(name).suffix.lower()
-    if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tif', '.tiff', '.heic'):
+    if content_type.startswith('image/') or ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.svg', '.tif', '.tiff', '.heic'):
         return 20 * 1024 * 1024
-    if ext in ('.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv', '.ppt', '.pptx', '.xls', '.xlsx'):
+    if content_type.startswith('text/') or ext in ('.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv', '.ppt', '.pptx', '.xls', '.xlsx', '.py', '.js', '.ts', '.tsx', '.jsx', '.json', '.yaml', '.yml', '.xml', '.html', '.css', '.sh'):
         return 50 * 1024 * 1024
     return 1024 * 1024 * 1024
 
@@ -380,12 +381,13 @@ async def upload_artifacts(project_id: str, files: list[UploadFile], requirement
             item = {'id': aid, 'project_id': project_id, 'original_name': name, 'stored_path': aid,
                     'extension': Path(name).suffix.lower(), 'bytes': 0, 'uploaded_at': timestamp()}
             pending.append(item)
-            limit = artifact_limit(name)
+            limit = artifact_limit(name, file.content_type or "")
             with artifact_path(item).open('wb') as output:
                 while chunk := await file.read(1024 * 1024):
                     item['bytes'] += len(chunk)
                     if item['bytes'] > limit:
-                        raise HTTPException(413, f'{name} 超过 {limit // (1024 * 1024)} MB，请缩小文件后重试')
+                        label = '1 GB' if limit == 1024 * 1024 * 1024 else f'{limit // (1024 * 1024)} MB'
+                        raise HTTPException(413, f'{name} 超过 {label}，请缩小文件后重试')
                     output.write(chunk)
             if item['bytes'] == 0:
                 raise HTTPException(422, f'{name} 是空文件，请更换文件')

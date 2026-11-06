@@ -36,6 +36,10 @@ class Phase2(unittest.TestCase):
                 client.put(base+'/requirements/'+ai['id'],json=item)
                 client.post(base+'/extract?replace_ai_drafts=true')
                 self.assertIn(ai['id'],[r['id'] for r in client.get(base+'/requirements').json()])
+                client.post(base+'/confirm')
+                client.put(base+'/task',json={'task_source':'paste','task_text':'提交文档\n'})
+                client.post(base+'/extract?replace_ai_drafts=true')
+                self.assertIn(ai['id'],[r['id'] for r in client.get(base+'/requirements').json()])
 
     def test_flow(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(main, 'DB_PATH', Path(folder)/'test.db'):
