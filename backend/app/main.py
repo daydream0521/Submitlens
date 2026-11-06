@@ -8,6 +8,7 @@ from urllib.request import Request, urlopen
 from dotenv import load_dotenv
 from .tasks import paragraphs, parse_document
 from .citations import resolve_sources
+from .checks import run_checks, status as check_status
 from typing import Literal
 from uuid import uuid4
 from fastapi.responses import FileResponse
@@ -454,3 +455,43 @@ def unbind_artifact(project_id: str, rid: str, aid: str):
         get_artifact(db, project_id, aid)
         db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid))
     return Response(status_code=204)
+
+
+def selected_files(db, rid):
+    return [dict(r) for r in db.execute('SELECT a.* FROM artifacts a JOIN requirement_artifacts ra ON a.id=ra.artifact_id WHERE ra.requirement_id=? AND ra.selected=1', (rid,))]
+
+
+def persist_requirement(db, rid, item):
+    db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps({k:v for k,v in item.items() if k != 'id'}), rid))
+
+
+def check_requirement(db, item):
+    now = timestamp()
+    item['last_check_result'] = run_checks(item, selected_files(db, item['id']), artifact_path, now)
+    item['last_checked_at'] = now
+    persist_requirement(db, item['id'], item)
+
+
+def check_summary(db, project_id):
+    items = requirements(db, project_id)
+    for item in items:
+        item['status'] = check_status(item)
+    formal = [i for i in items if i['status'] != 'excluded']
+    required = [i for i in formal if i.get('required', True)]
+    overall = 'unchecked' if not required else 'fail' if any(i['status']=='fail' for i in required) else 'pending' if any(i['status'] in ('pending','unchecked') for i in required) else 'pass'
+    return {'items':items, 'overall':overall, 'counts':{s:sum(i['status']==s for i in formal) for s in ('pass','fail','pending','unchecked')}}
+
+
+@app.get('/api/projects/{project_id}/checks')
+def get_checks(project_id: str):
+    with connect() as db:
+        return check_summary(db, project_id)
+
+
+@app.post('/api/projects/{project_id}/check')
+def check_project(project_id: str):
+    with connect() as db:
+        for item in requirements(db, project_id):
+            if item.get('confirmed') and not item.get('stale'):
+                check_requirement(db, item)
+        return check_summary(db, project_id)
