@@ -184,6 +184,22 @@ class RequirementInput(BaseModel):
     needs_manual_review: bool = True
 
 
+class TransformInput(BaseModel):
+    ids: list[str] = Field(min_length=1)
+    items: list[RequirementInput] = Field(min_length=1)
+
+
+@app.post('/api/projects/{project_id}/requirements-transform')
+def transform_requirements(project_id: str, body: TransformInput):
+    with connect() as db:
+        existing = {r['id'] for r in requirements(db, project_id)}
+        if not set(body.ids) <= existing:
+            raise HTTPException(409, '要求已更改，请刷新后重试')
+        for rid in body.ids:
+            db.execute('DELETE FROM requirements WHERE id=? AND project_id=?', (rid, project_id))
+        return [insert_requirement(db, project_id, item) for item in body.items]
+
+
 def requirements(db, project_id):
     project(db, project_id)
     return [dict(json.loads(r['data']), id=r['id']) for r in db.execute('SELECT * FROM requirements WHERE project_id=? ORDER BY rowid', (project_id,))]

@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './style.css'
+import { Requirements } from './Requirements'
 
-type Project = { id: string; name: string; kind: 'contest' | 'course'; task_text: string; updated_at: string }
+type Project = { id: string; name: string; kind: 'contest' | 'course'; task_text: string; task_filename?: string; task_segments?: {ref:string;text:string}[]; updated_at: string }
 async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   let response: Response
   try { response = await fetch('/api' + path, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }) }
   catch { throw new Error('无法连接服务，请启动后端后重试') }
-  if (!response.ok) throw new Error(response.status === 404 ? '项目不存在，请返回项目列表' : '操作失败，请重试')
+  if (!response.ok) { const error = await response.json(); throw new Error(typeof error.detail === 'string' ? error.detail : '操作失败，请重试') }
   return response.status === 204 ? undefined as T : response.json()
 }
 
@@ -81,7 +82,7 @@ function App() {
       {!selected && <button className="primary" onClick={() => show('create')}>新建项目</button>}
       {selected && <div className="actions"><span role="status">{dirty ? '未保存' : saved ? '已保存' : ''}</span><button className="primary" disabled={busy || !dirty} onClick={save}>{busy ? '保存中…' : '保存'}</button></div>}</header>
       {error && <div className="error" role="alert">{error} <button onClick={() => { void (dirty ? save() : load()) }}>重试</button></div>}
-      {loading ? <p role="status">正在读取…</p> : selected ? <section className="editor"><label htmlFor="task">粘贴文本</label><textarea id="task" value={text} onChange={e => { setText(e.target.value); setSaved(false) }} spellCheck={false} placeholder="粘贴任务说明" disabled={busy}/><footer><span>任务原文</span><span>{text.length} 字符</span></footer></section> : <section className="project-list" aria-label="项目列表">
+      {loading ? <p role="status">正在读取…</p> : selected ? <><section className="editor"><label>上传文件<input type="file" accept=".pdf,.docx,.md,.txt" disabled={busy} onChange={async e => { const file=e.target.files?.[0]; if(!file)return; e.target.value=''; if(file.size>50*1024*1024){setError('文件超过 50 MB，请缩小后重试');return} if(dirty&&!confirm('上传将替换未保存文本，继续？'))return;setBusy(true);setError('');try{const body=new FormData();body.append('file',file);const r=await fetch(`/api/projects/${selected.id}/task-file`,{method:'POST',body});const p=await r.json();if(!r.ok)throw new Error(p.detail);setSelected(p);setText(p.task_text)}catch(error){setError((error as Error).message)}finally{setBusy(false)} }}/></label><label htmlFor="task">粘贴文本</label><textarea id="task" value={text} onChange={e => { setText(e.target.value); setSaved(false) }} spellCheck={false} placeholder="粘贴任务说明" disabled={busy}/><footer><span>任务原文</span><span>{text.length} 字符</span></footer><details><summary>来源 {selected.task_filename}</summary>{selected.task_segments?.map((s,i)=><div key={i}><b>{s.ref}</b><pre className="original">{s.text}</pre></div>)}</details></section><Requirements key={selected.id + selected.updated_at} id={selected.id} dirty={dirty}/></> : <section className="project-list" aria-label="项目列表">
         {projects.length === 0 ? <div className="empty"><h2>暂无项目</h2></div> : <><div className="list-heading"><span>项目名称</span><span>更新时间</span><span>操作</span></div>{projects.map(p => <article key={p.id}><div className="project-cell"><span className="file-symbol" aria-hidden="true"/><div><button className="project-name" onClick={() => navigate(p.id)}>{p.name}</button><span className="project-type">{p.kind === 'contest' ? '竞赛' : '课程'}</span></div></div><time dateTime={p.updated_at}>{new Date(p.updated_at).toLocaleString('zh-CN', { hour12: false })}</time><div className="row-actions"><button onClick={() => show('rename', p)}>重命名</button><button className="danger-text" onClick={() => show('delete', p)}>删除</button></div></article>)}</>}
       </section>}
     </main>
