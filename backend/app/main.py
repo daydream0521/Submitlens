@@ -597,13 +597,28 @@ class ExportResponse(FileResponse):
         self.generated = generated
 
     async def __call__(self, scope, receive, send):
+        recorded = False
+        previous = None
+        async def send_chunk(message):
+            nonlocal recorded, previous
+            if message['type'] == 'http.response.body' and not message.get('more_body', False):
+                with connect() as db:
+                    row = db.execute('SELECT last_export_at FROM projects WHERE id=?', (self.project_id,)).fetchone()
+                    previous = row['last_export_at'] if row else None
+                    result = db.execute('UPDATE projects SET last_export_at=? WHERE id=? AND (last_export_at IS NULL OR last_export_at<?)',
+                                        (self.generated, self.project_id, self.generated))
+                    recorded = result.rowcount > 0
+            await send(message)
         try:
-            # Stream file chunks rather than delegate a path whose lifetime outlasts send.
+            # Keep the temporary path until chunk streaming finishes.
             scope = dict(scope, extensions={k:v for k,v in scope.get('extensions',{}).items() if k != 'http.response.pathsend'})
-            await super().__call__(scope, receive, send)
-            with connect() as db:
-                db.execute('UPDATE projects SET last_export_at=? WHERE id=? AND (last_export_at IS NULL OR last_export_at<?)',
-                           (self.generated, self.project_id, self.generated))
+            await super().__call__(scope, receive, send_chunk)
+        except BaseException:
+            if recorded:
+                with connect() as db:
+                    db.execute('UPDATE projects SET last_export_at=? WHERE id=? AND last_export_at=?',
+                               (previous, self.project_id, self.generated))
+            raise
         finally:
             Path(self.path).unlink(missing_ok=True)
 

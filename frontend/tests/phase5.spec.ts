@@ -1,0 +1,50 @@
+import {test,expect} from '@playwright/test'
+import {readFile} from 'node:fs/promises'
+test('完整交付流程与原生下载、过期提示',async({page,request})=>{
+ const root=process.env.APP_URL||'http://127.0.0.1:5173'
+ await page.goto(root)
+ const name='阶段五-'+Date.now()
+ await page.getByRole('button',{name:'新建项目',exact:true}).click()
+ await page.getByLabel('项目名称',{exact:true}).fill(name)
+ await page.getByRole('button',{name:'创建项目',exact:true}).click()
+ await page.getByRole('button',{name,exact:true}).click()
+ const id=new URLSearchParams(new URL(page.url()).hash.slice(1)).get('project')!
+ const base=root+'/api/projects/'+id
+ try{
+ await page.getByLabel('粘贴文本',{exact:true}).fill('提交说明文档，内容由人工核对。')
+ await page.getByRole('button',{name:'保存',exact:true}).click()
+ await expect(page.getByRole('status')).toHaveText('已保存')
+ await page.getByRole('button',{name:'添加要求',exact:true}).click()
+ await page.getByLabel('材料名称',{exact:true}).fill('说明文档')
+ await page.getByLabel('内容',{exact:true}).fill('提交说明文档')
+ await page.getByRole('button',{name:'保存要求',exact:true}).click()
+ await page.getByRole('button',{name:'确认清单',exact:true}).click()
+ await page.getByRole('link',{name:'去上传成果',exact:true}).click()
+ await page.locator('.coverage-row').filter({hasText:'说明文档'}).click()
+ await page.getByLabel('上传成果',{exact:true}).setInputFiles({name:'说明.md',mimeType:'text/markdown',buffer:Buffer.from('真实 Markdown 材料')})
+ await page.getByRole('button',{name:'设为提交文件',exact:true}).click()
+ await page.getByRole('button',{name:'开始预检',exact:true}).click()
+ await page.getByRole('button',{name:'符合',exact:true}).click()
+ await page.getByRole('link',{name:'交付中心',exact:true}).click()
+ await expect(page.getByRole('heading',{name:'交付中心',exact:true})).toBeVisible()
+ await expect(page.locator('.delivery-file input')).toBeChecked()
+ const download=page.waitForEvent('download')
+ await page.getByRole('button',{name:'导出 ZIP',exact:true}).click()
+ const zip=await download;const bytes=await readFile((await zip.path())!)
+ expect(bytes.subarray(0,2).toString()).toBe('PK');expect(bytes.includes(Buffer.from('submission_report.md'))).toBeTruthy();expect(bytes.includes(Buffer.from('真实 Markdown 材料'))).toBeTruthy()
+ await expect(page.getByRole('button',{name:'导出 ZIP',exact:true})).toBeEnabled()
+ await page.reload()
+ const rid=(await(await request.get(base+'/requirements')).json())[0].id
+ await request.put(base+'/requirements/'+rid+'/review',{data:{decision:'pass',note:'更新备注'}})
+ await page.reload()
+ await expect(page.getByRole('status')).toHaveText('材料已更新，请重新导出')
+ await page.locator('.delivery-file input').uncheck()
+ await expect(page.getByText('材料为空，本次仅导出验收报告',{exact:true})).toBeVisible()
+ const next=page.waitForEvent('download');await page.getByRole('button',{name:'导出 ZIP',exact:true}).click()
+ const report=await readFile((await(await next).path())!)
+ expect(report.includes(Buffer.from('验收关联证据未包含在本次 ZIP'))).toBeTruthy()
+ await expect(page.getByRole('button',{name:'导出 ZIP',exact:true})).toBeEnabled()
+ await expect(page.getByText('材料已更新，请重新导出',{exact:true})).toHaveCount(0)
+ await page.screenshot({path:'test-results/phase5.png',fullPage:true})
+ }finally{await request.delete(base)}
+})
