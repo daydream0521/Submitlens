@@ -1,6 +1,6 @@
 # SubmitLens
 
-大学生竞赛与课程交付的本地工作台。当前完成阶段 3：项目管理、任务解析与要求编辑确认、成果文件库和证据关联。成果验收页当前展示证据覆盖；交付中心仍为不可操作占位。
+大学生竞赛与课程交付的本地工作台。当前完成阶段 4：项目管理、任务解析与要求确认、成果关联、自动预检及人工复核。成果验收页展示证据覆盖和检查结果；交付中心仍为不可操作占位。
 
 ## 启动（Windows PowerShell）
 
@@ -67,7 +67,7 @@ npx playwright test --reporter=line
 
 ## 未实现
 
-自动检查、人工复核、报告和 ZIP 导出；无登录或云存储。本次止于阶段 3。
+报告和 ZIP 导出；无登录或云存储。本次止于阶段 4。
 
 
 ## 阶段 2 配置与使用
@@ -127,3 +127,38 @@ uv --cache-dir .uv-cache pip install --python .venv/Scripts/python.exe -r backen
 真实 DeepSeek 提取已按用户授权执行一次，但因模型生成不存在的来源行号范围而被拒绝入库，extract 返回 502，不能称为通过。源 Markdown 有 5–8 分钟和 PDF ≤30 页，但无至少 2 分钟 AI 开发、至少 3 组 Prompt 链条款；推荐选题未进入模型返回的必交项。详情及剩余问题见 docs/phase3-acceptance.md。
 
 信息架构参考 [JanusTrace](https://github.com/yesilzeytin/JanusTrace) 的覆盖与追踪呈现，只借鉴思路，未复制、修改或分发其源码；未引入其他候选项目。阶段三原始用户/可见回复见 docs/prompts/phase3-conversation.md，真实修复往返与命令记录见 docs/prompts/phase3.md。test/（含密钥）、data/（含原始模型响应）均不追踪、不提交。
+
+## 阶段 4：预检与人工复核
+
+启动方式不变，更新依赖后重启后端：`pip install -r backend/requirements.txt`（或上文 uv 命令）。新增 mutagen 1.47.0，以纯 Python 读取 MP4 元数据，无 ffmpeg 系统依赖。
+
+在成果页选定文件后点击「开始预检」。只处理已确认、非 stale 的要求，未检查显示「待检查」。列表按失败、待复核、待检查、通过排序，可按验收状态或证据覆盖筛选。每条显示实际、要求、引文、来源、时间与检查结果；支持人工「符合 / 不符合 / 暂不复核」和备注。
+
+- 自动检查仅限存在、扩展名、PDF 页数、MP4 时长、选定文件数量。扩展名检查不证明文件内容真实。
+- 页数支持明确页单位；时长支持分钟/秒的区间、上限/下限和精确值；数字支持阿拉伯数字及百以内常用中文数字。混合分钟/秒表达和未识别文本进入待复核，不猜默认值。
+- 文件数量必须有原文文件/份/张等明确依据；「至少三组 Prompt 链」不能按三份文件自动通过。内容要求需人工复核。
+- 自动失败优先于人工确认；读取异常保持待复核。建议项不改变必交项目总体状态。必要复核完成且适用检查通过后才显示通过。
+- 选择变化、替换、删除或解绑使相关人工结论失效；已检查的当前正式要求立即重检。未检查项目保持待检查。编辑要求清除旧结果并回到草稿；任务原文变化的 stale 要求退出验收。
+- 检查结果与人工复核在 SQLite 要求 JSON 内保存，项目状态从当前要求计算，刷新/进程重启后仍保留。没有新增哈希、版本历史或规则 DSL。
+
+新增 API：GET `/api/projects/{id}/checks`、POST `/api/projects/{id}/check`、PUT `/api/projects/{id}/requirements/{rid}/review`（`{decision:"pending|pass|fail",note:"..."}`）。
+
+本地引文修复不发模型请求：系统按精确引文搜索来源片段，唯一匹配覆盖模型自造的 ref；每个约束有自己的 source_ref。无法定位或匹配多处返回具体错误，保留原文和已有要求。真实保存响应中 2 条约束唯一定位，21 条匹配重复章节；完整响应仍因歧义拒绝，不冒充全部修复成功，也不凭空补造源文未出现的条款。
+
+实际命令与结果（2026-11-06）：
+
+```powershell
+.venv/Scripts/python backend/check_phase1.py
+.venv/Scripts/python -m backend.check_phase2
+.venv/Scripts/python -m backend.check_phase3
+.venv/Scripts/python -m backend.check_phase4
+cd frontend
+npm run typecheck
+npm run build
+$env:APP_URL='http://127.0.0.1:5174'
+npx playwright test --reporter=line
+```
+
+以上退出码均为 0；阶段 2/3 各 2 tests OK，阶段 4 为 4 tests OK；Playwright 5 passed（5.3s）。实际本地 MP4 元数据为 150.448 秒，按 5–8 分钟实际预检不通过。9:21/7:12 是明确的时长替身，不代表实测视频语义；PDF 30/31 页由测试生成。详见 docs/phase4-acceptance.md 与 docs/prompts/phase4.md。
+
+本阶段没有读取 API 密钥、没有新发付费请求。第五阶段仍需实现真实材料 ZIP、报告和导出后材料变更提示，当前交付中心继续不可用。
