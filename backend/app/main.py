@@ -7,6 +7,7 @@ import os
 from urllib.request import Request, urlopen
 from dotenv import load_dotenv
 from .tasks import paragraphs, parse_document
+from .citations import resolve_sources
 from typing import Literal
 from uuid import uuid4
 from fastapi.responses import FileResponse
@@ -182,6 +183,7 @@ class Constraint(BaseModel):
     type: Literal['extension', 'file_count', 'pdf_pages', 'video_duration', 'content']
     value: str = Field(min_length=1)
     quote: str = Field(min_length=1)
+    source_ref: str = ''
 
 
 class RequirementInput(BaseModel):
@@ -294,13 +296,9 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
         items = [RequirementInput.model_validate(x) for x in json.loads(raw['choices'][0]['message']['content'])['requirements']]
         if not items:
             raise ValueError('未提取到要求')
-        sources = {s['ref']: s['text'] for s in (task['task_segments'] or paragraphs(task['task_text']))}
-        for item in items:
-            source = sources.get(item.source_ref, '')
-            if not item.quote or item.quote not in source or any(c.quote not in source for c in item.constraints):
-                raise ValueError('返回要求缺少可定位的原文依据')
+        resolve_sources(items, task['task_segments'] or paragraphs(task['task_text']))
     except Exception as error:
-        raise HTTPException(502, '整理失败：' + ('返回要求缺少可定位的原文依据' if isinstance(error, ValueError) else '接口请求或响应异常') + '，请重试或手动添加要求') from error
+        raise HTTPException(502, '整理失败：' + (str(error) if isinstance(error, ValueError) else '接口请求或响应异常，请重试或手动添加要求')) from error
     with connect() as db:
         if project(db, project_id)['task_text'] != task['task_text']:
             raise HTTPException(409, '原文已更新，请重新整理')
