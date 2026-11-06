@@ -86,7 +86,12 @@ def project(db, project_id):
         raise HTTPException(404, '项目不存在，请返回项目列表')
     result = dict(row)
     result['task_segments'] = json.loads(result['task_segments'])
+    result['export_outdated'] = bool(result['last_export_at'] and result['export_changed_at'] and result['export_changed_at'] > result['last_export_at'])
     return result
+
+
+def mark_export_changed(db, project_id):
+    db.execute('UPDATE projects SET export_changed_at=? WHERE id=?', (timestamp(), project_id))
 
 
 def name_value(name):
@@ -128,6 +133,7 @@ def edit(project_id: str, body: ProjectEdit):
         db.execute('UPDATE projects SET name=?, kind=?, updated_at=? WHERE id=?',
                    (name_value(body.name) if body.name is not None else old['name'],
                     body.kind or old['kind'], timestamp(), project_id))
+        mark_export_changed(db, project_id)
         return project(db, project_id)
 
 
@@ -156,6 +162,7 @@ def save_task(project_id: str, body: TaskEdit):
 
 
 def unconfirm(db, project_id):
+    mark_export_changed(db, project_id)
     for row in db.execute('SELECT id,data FROM requirements WHERE project_id=?', (project_id,)).fetchall():
         item = json.loads(row['data'])
         item['confirmed'] = False
@@ -235,6 +242,7 @@ def insert_requirement(db, project_id, body, origin="manual", resolved=None):
     rid = str(uuid4())
     data = dict(resolved if resolved is not None else body.model_dump(), confirmed=False, stale=False, origin=origin)
     db.execute('INSERT INTO requirements VALUES (?,?,?)', (rid, project_id, json.dumps(data)))
+    mark_export_changed(db, project_id)
     return dict(data, id=rid)
 
 
@@ -260,6 +268,7 @@ def edit_requirement(project_id: str, rid: str, body: RequirementInput):
         resolved=resolve_draft(body,project(db,project_id)['task_segments']) if old.get('source_issues') else body.model_dump()
         data = dict(resolved, confirmed=False, stale=False, origin="manual")
         db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(data), rid))
+        mark_export_changed(db, project_id)
         return dict(data, id=rid)
 
 
@@ -271,6 +280,7 @@ def delete_requirement(project_id: str, rid: str):
             raise HTTPException(404, '要求不存在，请刷新清单')
         db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=?', (rid,))
         db.execute('DELETE FROM requirements WHERE id=? AND project_id=?', (rid, project_id))
+        mark_export_changed(db, project_id)
     return Response(status_code=204)
 
 
@@ -281,6 +291,8 @@ def confirm_requirements(project_id: str):
             rid = item.pop('id')
             if item.get('stale') or item.get('source_issues'):
                 continue
+            if not item['confirmed']:
+                mark_export_changed(db, project_id)
             item['confirmed'] = True
             item['origin'] = 'reviewed'
             db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps(item), rid))
@@ -358,6 +370,7 @@ def get_requirement(db, project_id, rid):
 
 
 def remove_artifact(db, item):
+    mark_export_changed(db, item['project_id'])
     affected = [r['requirement_id'] for r in db.execute('SELECT requirement_id FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))]
     artifact_path(item).unlink(missing_ok=True)
     db.execute('DELETE FROM requirement_artifacts WHERE artifact_id=?', (item['id'],))
@@ -465,6 +478,7 @@ def bind_artifact(project_id: str, rid: str, aid: str, body: LinkInput):
             db.execute('INSERT INTO requirement_artifacts VALUES (?,?,?) ON CONFLICT(requirement_id,artifact_id) DO UPDATE SET selected=excluded.selected',
                        (rid, aid, int(body.selected)))
         if before != {f['id'] for f in selected_files(db, rid)}:
+            mark_export_changed(db, project_id)
             invalidate_evidence(db, rid)
         selected = db.execute('SELECT selected FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid)).fetchone()[0]
     return {'requirement_id': rid, 'artifact_id': aid, 'selected': bool(selected)}
@@ -475,6 +489,8 @@ def unbind_artifact(project_id: str, rid: str, aid: str):
     with connect() as db:
         get_requirement(db, project_id, rid)
         get_artifact(db, project_id, aid)
+        if any(f['id']==aid for f in selected_files(db, rid)):
+            mark_export_changed(db, project_id)
         db.execute('DELETE FROM requirement_artifacts WHERE requirement_id=? AND artifact_id=?', (rid, aid))
         invalidate_evidence(db, rid)
     return Response(status_code=204)
@@ -485,6 +501,9 @@ def selected_files(db, rid):
 
 
 def persist_requirement(db, rid, item):
+    owner = db.execute('SELECT project_id FROM requirements WHERE id=?', (rid,)).fetchone()
+    if owner:
+        mark_export_changed(db, owner['project_id'])
     db.execute('UPDATE requirements SET data=? WHERE id=?', (json.dumps({k:v for k,v in item.items() if k != 'id'}), rid))
 
 
