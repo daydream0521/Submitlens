@@ -1,6 +1,6 @@
 # SubmitLens
 
-大学生竞赛与课程交付的本地工作台。当前完成阶段 2：项目管理、任务说明文本/文件解析、要求草稿提取、编辑与确认持久化。成果验收、交付中心为不可操作的导航占位。
+大学生竞赛与课程交付的本地工作台。当前完成阶段 3：项目管理、任务解析与要求编辑确认、成果文件库和证据关联。成果验收页当前展示证据覆盖；交付中心仍为不可操作占位。
 
 ## 启动（Windows PowerShell）
 
@@ -67,7 +67,7 @@ npx playwright test --reporter=line
 
 ## 未实现
 
-成果上传与关联、自动检查、人工复核、报告和 ZIP 导出；无登录或云存储。本次止于阶段 2。
+自动检查、人工复核、报告和 ZIP 导出；无登录或云存储。本次止于阶段 3。
 
 
 ## 阶段 2 配置与使用
@@ -76,7 +76,7 @@ npx playwright test --reporter=line
 
 启动命令与上方一致，先重新安装 backend/requirements.txt。上传 PDF/DOCX/MD/TXT，单文件上限 50 MB；扫描 PDF 不做 OCR。TXT/MD 支持 UTF-8 和 GB18030。文档原文及来源片段存 SQLite，不保存原始二进制。解析失败不替换已有原文。编辑解析文本后重新保存会按当前段落建立来源，不伪称编辑后的文字仍对应原 PDF 页码。
 
-点击「整理要求」将当前已保存文本发送至配置的模型服务。返回要求追加为草稿，不覆盖已有清单；可编辑、新增、删除、拆分，勾选多项后合并。「拆分」表单中修改原要求并填写拆出要求；保存一次完成两项。约束可单独编辑。点击「确认清单」整单确认；编辑要求或更新任务原文会使相应确认状态回到草稿。
+点击「整理要求」将当前已保存文本发送至配置的模型服务。首次返回要求为 AI 草稿；重复整理需明确点击「替换未确认 AI 草稿」，仅替换未编辑、未确认的 AI 草稿，保留手工编辑与曾确认的要求；可编辑、新增、删除、拆分，勾选多项后合并。「拆分」表单中修改原要求并填写拆出要求；保存一次完成两项。约束可单独编辑。点击「确认清单」整单确认；编辑要求会回到草稿；任务原文变化使旧要求标为「原文已变，需处理」，整单确认跳过它们。核对当前原文并编辑保存后才能重新确认。
 
 新增接口：POST task-file、POST extract、GET/POST requirements、PUT/DELETE requirements/{rid}、POST requirements-transform（事务拆分/合并）、POST confirm，均位于 /api/projects/{id}/ 下。
 
@@ -90,3 +90,40 @@ uv --cache-dir .uv-cache pip install --python .venv/Scripts/python.exe -r backen
 2026-11-06：阶段 1 重启检查通过；阶段 2 集成检查通过，覆盖四种格式、超限/损坏不覆盖原文、无 Key、断网、空/无出处响应、AI 草稿、编辑确认、重新打开数据库及拆分合并。浏览器 3 passed（4.9s），类型检查和构建通过。没有进行真实付费 LLM 调用，也未使用仓库未提供的完整赛道原文件作人工验收；引用定位检查不能证明模型理解正确。
 
 阶段 2 执行与协作记录：docs/prompts/phase2.md。阶段 1 记录保留，供对照。
+
+## 阶段 3：成果与证据覆盖
+
+启动命令、端口及依赖不变。进入项目后点击「成果验收」：先点要求直接「上传成果」，或「从文件库选择」已有文件。也可用项目文件库「批量上传成果」。单件要求只能选定一份提交文件；含 file_count 数量约束的要求允许多选，同一文件不重复计数。
+
+文件库展开文件可反向跳转对应要求、下载、替换或删除。替换使用新 ID，保留关联但清除选定状态，需重新选择。取消关联保留原文件；删除文件移除其全部关联；删除项目清理全部成果。原文件以内部 UUID 存于 data/artifacts/，原名仅用于展示和下载，同名不覆盖。不解压或执行文件。
+
+图片上限 20 MB；文档/文本上限 50 MB；视频、ZIP 及其他成果上限 1 GB（按 1024 进位）。成果每次最多读取 1 MiB 分块写盘，失败清理本次请求写入文件；一批中任一失败会取消整批。上传显示进度，100% 后仍可能等待服务端保存完成。任务文档上限保持 50 MB。
+
+覆盖统计仅包含已确认且无需处理的要求，分为「已有选定文件」和「尚未选定文件」。有候选文件但未选定仍算缺少证据；草稿和旧原文要求单列，不进入统计。当前仅是覆盖状态，没有页数/时长或内容有效性结论。
+
+新增 API（前缀 /api/projects/{id}）：
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET / POST | /artifacts | 文件库 / multipart files 批量上传 |
+| POST | /artifacts?requirement_id={rid} | 定向上传并关联 |
+| POST | /artifacts?replace_id={aid} | 单文件替换，生成新 ID，关联不继承选定 |
+| GET | /artifacts/{aid}/content | 下载文件 |
+| DELETE | /artifacts/{aid} | 删除文件及关联 |
+| PUT | /requirements/{rid}/artifacts/{aid} | {} 关联去重；{selected:true/false} 选择/取消选择 |
+| DELETE | /requirements/{rid}/artifacts/{aid} | 取消关联 |
+
+文件库响应包含每个文件对应的 requirement_id 与 selected，实现双向查看。所有接口限定当前项目。
+
+2026-11-06 最终实际命令与结果：
+
+- `.venv/Scripts/python backend/check_phase1.py`：退出码 0。
+- `.venv/Scripts/python -m backend.check_phase2`：2 tests OK，包含旧要求重确认及 AI 草稿替换回归。
+- `.venv/Scripts/python -m backend.check_phase3`：2 tests OK，包含真实后端进程重启、同名内容隔离、多对多去重、选择、替换、取消关联、删除、失败清理和项目清理。
+- `npm run typecheck`、`npm run build`（frontend 下）：成功，30 modules。
+- `$env:APP_URL='http://127.0.0.1:5174'; npx playwright test --reporter=line`（frontend 下）：4 passed，5.1s，含既有流程与成果双向追踪；已审查桌面与 375px 截图。
+- 本地 test 中 Markdown 32,299 B、视频 61,718,568 B、PDF 229,387 B 试传均为 201；清理后剩余成果文件 0。未上传真实 1 GB 文件，超限/中断清理分支以定向集成测试覆盖。
+
+真实 DeepSeek 提取已按用户授权执行一次，但因模型生成不存在的来源行号范围而被拒绝入库，extract 返回 502，不能称为通过。源 Markdown 有 5–8 分钟和 PDF ≤30 页，但无至少 2 分钟 AI 开发、至少 3 组 Prompt 链条款；推荐选题未进入模型返回的必交项。详情及剩余问题见 docs/phase3-acceptance.md。
+
+信息架构参考 [JanusTrace](https://github.com/yesilzeytin/JanusTrace) 的覆盖与追踪呈现，只借鉴思路，未复制、修改或分发其源码；未引入其他候选项目。阶段三原始用户/可见回复见 docs/prompts/phase3-conversation.md，真实修复往返与命令记录见 docs/prompts/phase3.md。test/（含密钥）、data/（含原始模型响应）均不追踪、不提交。
