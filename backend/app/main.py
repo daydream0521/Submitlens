@@ -288,8 +288,8 @@ def extract(project_id: str, replace_ai_drafts: bool = False):
         raise HTTPException(503, '未配置 API Key，请手动添加要求')
     schema = RequirementInput.model_json_schema()
     prompt = ('仅提取明确交付要求，按交付物合并。推荐选题、背景、评分不得变成必交。'
-              '不要补充常识阈值。出处必须使用给定 ref，quote 必须逐字引用该片段。'
-              '每个约束 quote 也必须逐字来自原文；value 保留原文单位，不执行检查。'
+              '不要补充常识阈值。source_ref 仅作候选，quote 必须逐字引用原文并足以区分重复出处。'
+              '每个约束可引用不同片段，使用各自 source_ref 和精确 quote；value 保留原文单位，不执行检查。'
               '语义内容需人工复核。仅返回 JSON {"requirements":[...]}，单项结构：' + json.dumps(schema, ensure_ascii=False))
     payload = {'model': os.getenv('LLM_MODEL', 'gpt-4o-mini'), 'messages': [
         {'role': 'system', 'content': prompt}, {'role': 'user', 'content': json.dumps(task['task_segments'] or paragraphs(task['task_text']), ensure_ascii=False)}],
@@ -489,7 +489,7 @@ def check_summary(db, project_id):
         item['status'] = check_status(item)
     formal = [i for i in items if i['status'] != 'excluded']
     required = [i for i in formal if i.get('required', True)]
-    overall = 'unchecked' if not required else 'fail' if any(i['status']=='fail' for i in required) else 'pending' if any(i['status'] in ('pending','unchecked') for i in required) else 'pass'
+    overall = 'unchecked' if not required or all(i['status']=='unchecked' for i in required) else 'fail' if any(i['status']=='fail' for i in required) else 'pending' if any(i['status'] in ('pending','unchecked') for i in required) else 'pass'
     return {'items':items, 'overall':overall, 'counts':{s:sum(i['status']==s for i in formal) for s in ('pass','fail','pending','unchecked')}}
 
 
@@ -514,6 +514,8 @@ def invalidate_evidence(db, rid):
         return
     item = dict(json.loads(row['data']), id=rid)
     checked = item.get('last_check_result') is not None
+    if not checked and 'review_decision' not in item:
+        return
     item['review_decision'] = 'pending'
     item['review_note'] = ''
     item.pop('reviewed_at', None)

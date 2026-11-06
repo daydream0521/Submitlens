@@ -31,6 +31,8 @@ def bounds(value, kind):
             raise ValueError('未明确页数单位，请人工复核')
         text = text.replace('PDF', '').replace('页', '')
     elif kind == 'video_duration':
+        if '分' in text and '秒' in text:
+            raise ValueError('混合时长单位未解析，请改为分钟范围或人工复核')
         unit = 60 if '分钟' in text or '分' in text else 1 if '秒' in text else None
         if unit is None:
             raise ValueError('未明确时长单位，请人工复核')
@@ -89,10 +91,11 @@ def run_checks(item, files, path_for, now):
                 actual = ', '.join(f['original_name'] + ': ' + f['extension'] for f in files) or '未选定文件'
                 result(kind,actual,value,'pass' if files and all(f['extension'].lstrip('.').upper() in [x.upper() for x in allowed] for f in files) else 'fail',quote,source)
                 continue
-            low, high = bounds(value, kind)
+            if kind == 'file_count' and (not re.search(r'文件|份|张|截图|图片', quote) or re.search('组|Prompt|迭代|链|内容', quote, re.I)):
+                raise ValueError('原文未明确文件数量，请人工复核')
+            parsed_value = value + '个文件' if kind == 'file_count' and re.fullmatch(r'\d+', value) else value
+            low, high = bounds(parsed_value, kind)
             if kind == 'file_count':
-                # quote must explicitly concern files, not groups of content.
-                bounds(quote, kind)
                 actuals = [len({f['id'] for f in files})]
                 actual = f'{actuals[0]} 个文件'
             elif kind == 'pdf_pages':
