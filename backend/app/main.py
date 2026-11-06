@@ -12,6 +12,9 @@ from .checks import run_checks, status as check_status
 from typing import Literal
 from uuid import uuid4
 from fastapi.responses import FileResponse
+import tempfile
+import zipfile
+from .exporting import archive_path, report as export_report
 
 from fastapi import FastAPI, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -41,6 +44,9 @@ async def lifespan(app):
             task_filename TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)''')
         if 'task_segments' not in [r['name'] for r in db.execute('PRAGMA table_info(projects)')]:
             db.execute("ALTER TABLE projects ADD COLUMN task_segments TEXT NOT NULL DEFAULT '[]'")
+        for column in ('last_export_at', 'export_changed_at'):
+            if column not in [r['name'] for r in db.execute('PRAGMA table_info(projects)')]:
+                db.execute(f'ALTER TABLE projects ADD COLUMN {column} TEXT')
         db.execute('''CREATE TABLE IF NOT EXISTS requirements (
             id TEXT PRIMARY KEY, project_id TEXT NOT NULL, data TEXT NOT NULL)''')
         db.execute('''CREATE TABLE IF NOT EXISTS artifacts (
@@ -549,3 +555,57 @@ def review_requirement(project_id: str, rid: str, body: ReviewInput):
         item['reviewed_at'] = timestamp()
         persist_requirement(db, rid, item)
         return check_summary(db, project_id)
+
+
+class ExportInput(BaseModel):
+    artifact_ids: list[str] = []
+
+
+class ExportResponse(FileResponse):
+    def __init__(self, path, project_id, generated):
+        super().__init__(path, filename='SubmitLens.zip', media_type='application/zip')
+        self.project_id = project_id
+        self.generated = generated
+
+    async def __call__(self, scope, receive, send):
+        try:
+            # Stream file chunks rather than delegate a path whose lifetime outlasts send.
+            scope = dict(scope, extensions={k:v for k,v in scope.get('extensions',{}).items() if k != 'http.response.pathsend'})
+            await super().__call__(scope, receive, send)
+            with connect() as db:
+                db.execute('UPDATE projects SET last_export_at=? WHERE id=? AND (last_export_at IS NULL OR last_export_at<?)',
+                           (self.generated, self.project_id, self.generated))
+        finally:
+            Path(self.path).unlink(missing_ok=True)
+
+
+@app.post('/api/projects/{project_id}/export')
+def export_project(project_id: str, body: ExportInput):
+    temp_path = None
+    try:
+        with connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = project(db, project_id)
+            generated = timestamp()
+            packed = [get_artifact(db, project_id, aid) for aid in dict.fromkeys(body.artifact_ids)]
+            for item in packed:
+                if not artifact_path(item).is_file():
+                    raise HTTPException(409, item['original_name'] + ' 的磁盘文件缺失，请重新上传')
+            summary = check_summary(db, project_id)
+            selected = {item['id']:selected_files(db, item['id']) for item in summary['items']}
+            folder = DB_PATH.parent / 'export-temp'
+            folder.mkdir(parents=True, exist_ok=True)
+            fd, filename = tempfile.mkstemp(suffix='.zip', dir=folder)
+            os.close(fd)
+            temp_path = Path(filename)
+            with zipfile.ZipFile(temp_path, 'w', compression=zipfile.ZIP_STORED, allowZip64=True) as archive:
+                archive.writestr('submission_report.md', export_report(current, summary, packed, selected, generated))
+                for item in packed:
+                    archive.write(artifact_path(item), archive_path(item))
+        return ExportResponse(temp_path, project_id, generated)
+    except BaseException as error:
+        if temp_path:
+            temp_path.unlink(missing_ok=True)
+        if isinstance(error, OSError):
+            raise HTTPException(500, '导出失败，请检查磁盘空间与文件权限后重试') from error
+        raise
