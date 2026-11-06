@@ -36,9 +36,18 @@ function App() {
     } catch (e) { setSelected(null); setError((e as Error).message) }
     finally { setLoading(false) }
   }
-  useEffect(() => { void load(); const change = () => { void load() }; window.addEventListener('hashchange', change); return () => window.removeEventListener('hashchange', change) }, [])
+  const navigation = useRef({ dirty: false, hash: location.hash })
+  navigation.current.dirty = dirty
+  useEffect(() => { void load(); const change = () => {
+    if (navigation.current.dirty && !confirm('任务说明尚未保存，离开并放弃修改？')) {
+      history.replaceState(null, '', location.pathname + location.search + navigation.current.hash)
+      return
+    }
+    navigation.current.hash = location.hash
+    void load()
+  }; window.addEventListener('hashchange', change); return () => window.removeEventListener('hashchange', change) }, [])
   useEffect(() => { const warn = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = '' } }; window.addEventListener('beforeunload', warn); return () => window.removeEventListener('beforeunload', warn) }, [dirty])
-  function navigate(id?: string) { if (dirty && !confirm('任务说明尚未保存，离开并放弃修改？')) return; setSaved(false); location.hash = id ? 'project=' + id : '' }
+  function navigate(id?: string) { setSaved(false); location.hash = id ? 'project=' + id : '' }
   function show(type: typeof modal, p?: Project) { setTarget(p || null); setName(p?.name || ''); setKind(p?.kind || 'contest'); setFormError(''); setModal(type); dialog.current?.showModal() }
   function close() { if (busy) return; dialog.current?.close(); setModal(null) }
   async function submit(e: React.FormEvent) {
